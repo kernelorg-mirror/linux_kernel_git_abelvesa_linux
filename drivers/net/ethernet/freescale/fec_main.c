@@ -48,6 +48,7 @@
 #include <linux/bitops.h>
 #include <linux/io.h>
 #include <linux/irq.h>
+#include <linux/interconnect.h>
 #include <linux/clk.h>
 #include <linux/crc32.h>
 #include <linux/platform_device.h>
@@ -3802,6 +3803,18 @@ fec_probe(struct platform_device *pdev)
 	fep->pdev = pdev;
 	fep->dev_id = dev_id++;
 
+	fep->bus_path = devm_of_icc_get(&pdev->dev, "path");
+	if (IS_ERR(fep->bus_path)) {
+		return PTR_ERR(fep->bus_path);
+	} else if (fep->bus_path) {
+		if (of_property_read_u32(np, "fsl,icc-rate", &fep->bus_rate)) {
+			dev_err(&pdev->dev, "icc-rate missing\n");
+			return -EINVAL;
+		}
+
+		icc_set_bw(fep->bus_path, 0, fep->bus_rate);
+	}
+
 	platform_set_drvdata(pdev, ndev);
 
 	if ((of_machine_is_compatible("fsl,imx6q") ||
@@ -4072,6 +4085,8 @@ static int __maybe_unused fec_suspend(struct device *dev)
 	if (fep->clk_enet_out || fep->reg_phy)
 		fep->link = 0;
 
+	icc_disable(fep->bus_path);
+
 	return 0;
 }
 
@@ -4081,6 +4096,8 @@ static int __maybe_unused fec_resume(struct device *dev)
 	struct fec_enet_private *fep = netdev_priv(ndev);
 	int ret;
 	int val;
+
+	icc_enable(fep->bus_path);
 
 	if (fep->reg_phy && !(fep->wol_flag & FEC_WOL_FLAG_ENABLE)) {
 		ret = regulator_enable(fep->reg_phy);
@@ -4131,6 +4148,7 @@ static int __maybe_unused fec_runtime_suspend(struct device *dev)
 	clk_disable_unprepare(fep->clk_ahb);
 	clk_disable_unprepare(fep->clk_ipg);
 
+	icc_disable(fep->bus_path);
 	return 0;
 }
 
@@ -4140,6 +4158,7 @@ static int __maybe_unused fec_runtime_resume(struct device *dev)
 	struct fec_enet_private *fep = netdev_priv(ndev);
 	int ret;
 
+	icc_enable(fep->bus_path);
 	ret = clk_prepare_enable(fep->clk_ahb);
 	if (ret)
 		return ret;
