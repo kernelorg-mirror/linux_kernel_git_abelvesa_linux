@@ -27,6 +27,7 @@
 #include <linux/resource.h>
 #include <linux/signal.h>
 #include <linux/types.h>
+#include <linux/interconnect.h>
 #include <linux/interrupt.h>
 #include <linux/reset.h>
 #include <linux/pm_domain.h>
@@ -83,6 +84,9 @@ struct imx6_pcie {
 	struct regulator	*vpcie;
 	struct regulator	*vph;
 	void __iomem		*phy_base;
+
+	struct icc_path *bus_path;
+	unsigned int bus_rate;
 
 	/* power domain for pcie */
 	struct device		*pd_pcie;
@@ -948,6 +952,8 @@ static int imx6_pcie_suspend_noirq(struct device *dev)
 	imx6_pcie_clk_disable(imx6_pcie);
 	imx6_pcie_ltssm_disable(dev);
 
+	icc_disable(imx6_pcie->bus_path);
+
 	return 0;
 }
 
@@ -956,6 +962,8 @@ static int imx6_pcie_resume_noirq(struct device *dev)
 	int ret;
 	struct imx6_pcie *imx6_pcie = dev_get_drvdata(dev);
 	struct pcie_port *pp = &imx6_pcie->pci->pp;
+
+	icc_enable(imx6_pcie->bus_path);
 
 	if (!(imx6_pcie->drvdata->flags & IMX6_PCIE_FLAG_SUPPORTS_SUSPEND))
 		return 0;
@@ -983,7 +991,7 @@ static int imx6_pcie_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct dw_pcie *pci;
 	struct imx6_pcie *imx6_pcie;
-	struct device_node *np;
+	struct device_node *np = pdev->dev.of_node;
 	struct resource *dbi_base;
 	struct device_node *node = dev->of_node;
 	int ret;
@@ -1003,6 +1011,19 @@ static int imx6_pcie_probe(struct platform_device *pdev)
 
 	imx6_pcie->pci = pci;
 	imx6_pcie->drvdata = of_device_get_match_data(dev);
+
+	imx6_pcie->bus_path = devm_of_icc_get(&pdev->dev, "path");
+	if (IS_ERR(imx6_pcie->bus_path)) {
+		return PTR_ERR(imx6_pcie->bus_path);
+	} else if (imx6_pcie->bus_path) {
+		if (of_property_read_u32(np, "fsl,icc-rate",
+					 &imx6_pcie->bus_rate)) {
+			dev_err(&pdev->dev, "icc-rate missing\n");
+			return -EINVAL;
+		}
+
+		icc_set_bw(imx6_pcie->bus_path, 0, imx6_pcie->bus_rate);
+	}
 
 	/* Find the PHY if one is defined, only imx7d uses it */
 	np = of_parse_phandle(node, "fsl,imx7d-pcie-phy", 0);
