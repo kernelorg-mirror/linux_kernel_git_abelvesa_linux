@@ -73,6 +73,7 @@
 enum gpd_status {
 	GENPD_STATE_ON = 0,	/* PM domain is on */
 	GENPD_STATE_OFF,	/* PM domain is off */
+	GENPD_STATE_UNKNOWN,	/* PM domain boot state is unknown */
 };
 
 enum genpd_notication {
@@ -131,6 +132,7 @@ struct generic_pm_domain {
 	const char *name;
 	atomic_t sd_count;	/* Number of subdomains with power "on" */
 	enum gpd_status status;	/* Current state of the domain */
+	enum gpd_status boot_status;	/* Boot state of the domain */
 	unsigned int device_count;	/* Number of devices */
 	unsigned int suspended_count;	/* System suspend device counter */
 	unsigned int prepared_count;	/* Suspend counter of prepared devices */
@@ -229,8 +231,10 @@ int pm_genpd_add_subdomain(struct generic_pm_domain *genpd,
 int pm_genpd_remove_subdomain(struct generic_pm_domain *genpd,
 			      struct generic_pm_domain *subdomain);
 int pm_genpd_init(struct generic_pm_domain *genpd,
-		  struct dev_power_governor *gov, bool is_off);
+		  struct dev_power_governor *gov,
+		  enum gpd_status boot_status);
 int pm_genpd_remove(struct generic_pm_domain *genpd);
+void pm_genpd_power_off_unused_sync_state(struct device *dev);
 int dev_pm_genpd_set_performance_state(struct device *dev, unsigned int state);
 int dev_pm_genpd_add_notifier(struct device *dev, struct notifier_block *nb);
 int dev_pm_genpd_remove_notifier(struct device *dev);
@@ -269,7 +273,8 @@ static inline int pm_genpd_remove_subdomain(struct generic_pm_domain *genpd,
 	return -ENOSYS;
 }
 static inline int pm_genpd_init(struct generic_pm_domain *genpd,
-				struct dev_power_governor *gov, bool is_off)
+				struct dev_power_governor *gov,
+				enum gpd_status boot_status)
 {
 	return -ENOSYS;
 }
@@ -277,6 +282,9 @@ static inline int pm_genpd_remove(struct generic_pm_domain *genpd)
 {
 	return -EOPNOTSUPP;
 }
+
+static inline void pm_genpd_power_off_unused_sync_state(struct device *dev)
+{ }
 
 static inline int dev_pm_genpd_set_performance_state(struct device *dev,
 						     unsigned int state)

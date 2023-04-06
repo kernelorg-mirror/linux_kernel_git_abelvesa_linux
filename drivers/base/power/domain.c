@@ -130,6 +130,7 @@ static const struct genpd_lock_ops genpd_spin_ops = {
 #define genpd_is_active_wakeup(genpd)	(genpd->flags & GENPD_FLAG_ACTIVE_WAKEUP)
 #define genpd_is_cpu_domain(genpd)	(genpd->flags & GENPD_FLAG_CPU_DOMAIN)
 #define genpd_is_rpm_always_on(genpd)	(genpd->flags & GENPD_FLAG_RPM_ALWAYS_ON)
+#define genpd_boot_keep_on(genpd)		(!(genpd->boot_status == GENPD_STATE_OFF))
 
 static inline bool irq_safe_dev_in_sleep_domain(struct device *dev,
 		const struct generic_pm_domain *genpd)
@@ -655,6 +656,29 @@ static void genpd_queue_power_off_work(struct generic_pm_domain *genpd)
 }
 
 /**
+ * pm_genpd_power_off_unused_sync_state - Power off all domains for provider.
+ * @dev: Provider's device.
+ *
+ * Request power off for all unused domains of the provider.
+ * This should be used exclusively as sync state callback for genpd providers.
+ */
+void pm_genpd_power_off_unused_sync_state(struct device *dev)
+{
+	struct generic_pm_domain *genpd;
+
+	mutex_lock(&gpd_list_lock);
+
+	list_for_each_entry(genpd, &gpd_list, gpd_list_node)
+		if (genpd->provider->dev == dev && genpd_boot_keep_on(genpd)) {
+			genpd->boot_status = GENPD_STATE_OFF;
+			genpd_queue_power_off_work(genpd);
+		}
+
+	mutex_unlock(&gpd_list_lock);
+}
+EXPORT_SYMBOL_GPL(pm_genpd_power_off_unused_sync_state);
+
+/**
  * genpd_power_off - Remove power from a given PM domain.
  * @genpd: PM domain to power down.
  * @one_dev_on: If invoked from genpd's ->runtime_suspend|resume() callback, the
@@ -674,6 +698,12 @@ static int genpd_power_off(struct generic_pm_domain *genpd, bool one_dev_on,
 	unsigned int not_suspended = 0;
 	int ret;
 
+	/*
+	 * If the domain was left enabled at boot stage,
+	 * abort power off until sync state is reached.
+	 */
+	if (genpd_boot_keep_on(genpd))
+		return -EBUSY;
 	/*
 	 * Do not try to power off the domain in the following situations:
 	 * (1) The domain is already in the "power off" state.
@@ -762,6 +792,13 @@ static int genpd_power_on(struct generic_pm_domain *genpd, unsigned int depth)
 {
 	struct gpd_link *link;
 	int ret = 0;
+
+	/*
+	 * Since a power on request means the domain is being used
+	 * from now on, mark the boot status of it as OFF.
+	 */
+	if (genpd_boot_keep_on(genpd))
+		genpd->boot_status = GENPD_STATE_OFF;
 
 	if (genpd_status_on(genpd))
 		return 0;
@@ -1123,6 +1160,9 @@ static void genpd_sync_power_off(struct generic_pm_domain *genpd, bool use_lock,
 				 unsigned int depth)
 {
 	struct gpd_link *link;
+
+	if (genpd_boot_keep_on(genpd))
+		return;
 
 	if (!genpd_status_on(genpd) || genpd_is_always_on(genpd))
 		return;
@@ -2043,12 +2083,13 @@ static void genpd_lock_init(struct generic_pm_domain *genpd)
  * pm_genpd_init - Initialize a generic I/O PM domain object.
  * @genpd: PM domain object to initialize.
  * @gov: PM domain governor to associate with the domain (may be NULL).
- * @is_off: Initial value of the domain's power_is_off field.
+ * @boot_status: Initial (boot) state of the domain.
  *
  * Returns 0 on successful initialization, else a negative error code.
  */
 int pm_genpd_init(struct generic_pm_domain *genpd,
-		  struct dev_power_governor *gov, bool is_off)
+		  struct dev_power_governor *gov,
+		  enum gpd_status boot_status)
 {
 	int ret;
 
@@ -2063,7 +2104,7 @@ int pm_genpd_init(struct generic_pm_domain *genpd,
 	genpd->gov = gov;
 	INIT_WORK(&genpd->power_off_work, genpd_power_off_work_fn);
 	atomic_set(&genpd->sd_count, 0);
-	genpd->status = is_off ? GENPD_STATE_OFF : GENPD_STATE_ON;
+	genpd->status = genpd->boot_status = boot_status;
 	genpd->device_count = 0;
 	genpd->provider = NULL;
 	genpd->has_provider = false;
@@ -3112,7 +3153,8 @@ static int genpd_summary_one(struct seq_file *s,
 {
 	static const char * const status_lookup[] = {
 		[GENPD_STATE_ON] = "on",
-		[GENPD_STATE_OFF] = "off"
+		[GENPD_STATE_OFF] = "off",
+		[GENPD_STATE_UNKNOWN] = "unknown"
 	};
 	struct pm_domain_data *pm_data;
 	const char *kobj_path;
@@ -3194,7 +3236,8 @@ static int status_show(struct seq_file *s, void *data)
 {
 	static const char * const status_lookup[] = {
 		[GENPD_STATE_ON] = "on",
-		[GENPD_STATE_OFF] = "off"
+		[GENPD_STATE_OFF] = "off",
+		[GENPD_STATE_UNKNOWN] = "unknown"
 	};
 
 	struct generic_pm_domain *genpd = s->private;
