@@ -455,6 +455,10 @@ static int poweroff_coreid(struct venus_core *core, unsigned int coreid_mask)
 		if (ret)
 			return ret;
 
+		ret = dev_pm_genpd_set_hwmode(core->pmdomains[1], false);
+		if (ret)
+			return ret;
+
 		ret = pm_runtime_put_sync(core->pmdomains[1]);
 		if (ret < 0)
 			return ret;
@@ -468,6 +472,10 @@ static int poweroff_coreid(struct venus_core *core, unsigned int coreid_mask)
 		vcodec_clks_disable(core, core->vcodec1_clks);
 
 		ret = vcodec_control_v4(core, VIDC_CORE_ID_2, false);
+		if (ret)
+			return ret;
+
+		ret = dev_pm_genpd_set_hwmode(core->pmdomains[2], false);
 		if (ret)
 			return ret;
 
@@ -488,6 +496,10 @@ static int poweron_coreid(struct venus_core *core, unsigned int coreid_mask)
 		if (ret < 0)
 			return ret;
 
+		ret = dev_pm_genpd_set_hwmode(core->pmdomains[1], true);
+		if (ret)
+			return ret;
+
 		ret = vcodec_control_v4(core, VIDC_CORE_ID_1, true);
 		if (ret)
 			return ret;
@@ -504,6 +516,10 @@ static int poweron_coreid(struct venus_core *core, unsigned int coreid_mask)
 	if (coreid_mask & VIDC_CORE_ID_2) {
 		ret = pm_runtime_get_sync(core->pmdomains[2]);
 		if (ret < 0)
+			return ret;
+
+		ret = dev_pm_genpd_set_hwmode(core->pmdomains[2], true);
+		if (ret)
 			return ret;
 
 		ret = vcodec_control_v4(core, VIDC_CORE_ID_2, true);
