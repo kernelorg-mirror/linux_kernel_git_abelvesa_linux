@@ -93,13 +93,6 @@ static int gdsc_check_status(struct gdsc *sc, enum gdsc_status status)
 	return -EINVAL;
 }
 
-static int gdsc_hwctrl(struct gdsc *sc, bool en)
-{
-	u32 val = en ? HW_CONTROL_MASK : 0;
-
-	return regmap_update_bits(sc->regmap, sc->gdscr, HW_CONTROL_MASK, val);
-}
-
 static int gdsc_poll_status(struct gdsc *sc, enum gdsc_status status)
 {
 	ktime_t start;
@@ -114,6 +107,29 @@ static int gdsc_poll_status(struct gdsc *sc, enum gdsc_status status)
 		return 0;
 
 	return -ETIMEDOUT;
+}
+
+static int gdsc_hwctrl(struct gdsc *sc, bool en)
+{
+	u32 val = en ? HW_CONTROL_MASK : 0;
+	int ret;
+
+	ret = regmap_update_bits(sc->regmap, sc->gdscr, HW_CONTROL_MASK, val);
+	if (ret)
+		return ret;
+
+	/*
+	 * Wait for the GDSC to go through a power down and
+	 * up cycle.  In case we end up polling status
+	 * bits for the gdsc before the power cycle is completed
+	 * it might read an 'on' status wrongly.
+	 */
+	udelay(1);
+
+	if (en)
+		return 0;
+
+	return gdsc_poll_status(sc, GDSC_ON);
 }
 
 static int gdsc_update_collapse_bit(struct gdsc *sc, bool val)
@@ -254,6 +270,14 @@ static void gdsc_retain_ff_on(struct gdsc *sc)
 	u32 mask = GDSC_RETAIN_FF_ENABLE;
 
 	regmap_update_bits(sc->regmap, sc->gdscr, mask, mask);
+}
+
+static int gdsc_set_hwmode_dev(struct generic_pm_domain *domain,
+			       struct device *dev, bool enable)
+{
+	struct gdsc *sc = domain_to_gdsc(domain);
+
+	return gdsc_hwctrl(sc, enable);
 }
 
 static int gdsc_enable(struct generic_pm_domain *domain)
@@ -399,13 +423,6 @@ static int gdsc_init(struct gdsc *sc)
 		on = true;
 	}
 
-	/* Disable HW trigger mode until propertly supported */
-	if (sc->flags & HW_CTRL) {
-		ret = gdsc_hwctrl(sc, false);
-		if (ret < 0)
-			return ret;
-	}
-
 	if (on || (sc->pwrsts & PWRSTS_RET))
 		gdsc_force_mem_on(sc);
 	else
@@ -417,6 +434,8 @@ static int gdsc_init(struct gdsc *sc)
 		sc->pd.power_off = gdsc_disable;
 	if (!sc->pd.power_on)
 		sc->pd.power_on = gdsc_enable;
+	if (sc->flags & HW_CTRL)
+		sc->pd.set_hwmode_dev = gdsc_set_hwmode_dev;
 
 	ret = pm_genpd_init(&sc->pd, NULL, !on);
 	if (ret)
